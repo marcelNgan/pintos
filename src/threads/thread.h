@@ -4,6 +4,10 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
+#include "filesys/file.h"
+#include "lib/kernel/hash.h"
+
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -100,6 +104,8 @@ struct thread
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
+
+    int64_t wakeup_tick;                /* used by Alarm clock to wake up the thread */
   };
 
 /* If false (default), use round-robin scheduler.
@@ -118,6 +124,9 @@ tid_t thread_create (const char *name, int priority, thread_func *, void *);
 
 void thread_block (void);
 void thread_unblock (struct thread *);
+
+void thread_sleep (int64_t ticks);
+void thread_wakeup (void);
 
 struct thread *thread_current (void);
 tid_t thread_tid (void);

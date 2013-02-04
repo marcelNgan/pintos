@@ -11,6 +11,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "devices/timer.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -24,9 +25,14 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 
+/* List of processes in the THREAD_BLOCK state, that is, processes
+   that are sleeping. */
+static struct list block_list;
+
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
+
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -70,6 +76,9 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+static bool sleep_ticks_less (const struct list_elem *a,
+                               const struct list_elem *b,
+                               void *aux UNUSED);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -92,6 +101,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  list_init (&block_list);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -137,6 +147,10 @@ thread_tick (void)
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
     intr_yield_on_return ();
+
+  /*Check if we have to wake up any threads or not */
+  thread_wakeup();
+
 }
 
 /* Prints thread statistics. */
@@ -248,6 +262,93 @@ thread_unblock (struct thread *t)
   list_push_back (&ready_list, &t->elem);
   t->status = THREAD_READY;
   intr_set_level (old_level);
+}
+
+static bool
+compare_less_ticks(const struct list_elem *a, const struct list_elem *b,
+   void *aux UNUSED) 
+{
+   ASSERT(a!=NULL);
+   ASSERT(b!=NULL);
+
+   const struct thread *threadA = list_entry(a, struct thread, elem);
+   const struct thread *threadB = list_entry(b, struct thread, elem);
+
+   return (threadA->wakeup_tick < threadB->wakeup_tick);
+}
+
+/* Suspend the thread until time has advanced
+   by at least x (ticks) timer ticks */
+void
+thread_sleep(int64_t ticks) 
+{
+  enum intr_level old_level;
+
+  /* Blocks the calling thread
+     The thread must be unblocked after ticks ticks have occurred
+     A call with a negative value for ticks should not block
+     Allows other threads to run whilst calling thread is blocked
+     Multiple threads may call timer sleep() simultaneously */
+
+  if (!(ticks>0)) return;
+
+  struct thread *current = thread_current();
+  ASSERT (current->status == THREAD_RUNNING);
+
+  /* set when thread may wake up */
+  current->wakeup_tick = ticks + timer_ticks();
+
+  /* temporarily disable interrupts so the thread can be blocked */
+  old_level = intr_disable(); 
+
+  /* block thread and add to block queue */
+  list_insert_ordered(&block_list, &current->elem, compare_less_ticks, NULL);
+  thread_block();
+
+  /* reset interrupts */
+  intr_set_level(old_level);
+}
+
+/* Resume the execution of the thread after sleeping */
+void
+thread_wakeup(void) {
+  
+  enum intr_level old_level;
+  /* checks if any threads in the block queue have its wakeup_tick <= 
+     timer_ticks(), if there is one, unblocks it ad remove it from 
+     block queue.  This has to continue recurring until we find a 
+     thread with wakeup_tick > timer-ticks().
+  */
+
+  struct list_elem *current_elem;
+  struct list_elem *next_elem;
+  struct thread *t;
+
+  if (list_empty (&block_list) ) return;
+  
+  current_elem = list_begin (&block_list);
+  while (current_elem != list_end (&block_list))
+  {
+    /* check if the current elem should be woken up or not */
+    t = list_entry (current_elem, struct thread, elem);
+    if (t -> wakeup_tick > timer_ticks()) break;
+    
+
+    /* temporarily disable interrupts so the thread can be unblocked */
+    old_level = intr_disable ();
+    
+    /* remove the current elem from the list and unblock it
+       set the next elem to be tested as the current_elem
+    */
+    next_elem = list_next(current_elem);    
+    list_remove (current_elem);
+    current_elem = next_elem;
+    thread_unblock (t);
+
+
+    /* reset interrupts */    
+    intr_set_level (old_level);
+  }
 }
 
 /* Returns the name of the running thread. */
