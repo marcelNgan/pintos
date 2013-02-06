@@ -105,7 +105,11 @@ struct thread
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
 
-    int64_t wakeup_tick;                /* used by Alarm clock to wake up the thread */
+    int64_t wakeup_tick;       /* used by Alarm clock to wake up the thread */
+    int prev_priority;     /* the thread's priority before donation */
+    bool donated;             /* check if the thread's priority is donated */
+    struct list lock_list;  /* a list of all the locks held by the thread */
+    struct lock *locker;    /*the lock blocking the thread */   
   };
 
 /* If false (default), use round-robin scheduler.
@@ -134,6 +138,8 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+/* This does what thread yield used to do except it works with any thread */
+void thread_specific_yield (struct thread *t); 
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
@@ -141,6 +147,10 @@ void thread_foreach (thread_action_func *, void *);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
+/* This does what thread_set_priority used to do except it works with any 
+   thread and also priority donation is checked
+*/
+void thread_specific_set_priority (int new_priority, struct thread *t, bool donated);
 
 int thread_get_nice (void);
 void thread_set_nice (int);

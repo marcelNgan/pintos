@@ -281,7 +281,7 @@ thread_unblock (struct thread *t)
 /*Compare two list_elem and return true when the first elem has less ticks.*/
 static bool
 compare_less_ticks(const struct list_elem *a, const struct list_elem *b,
-   void *aux UNUSED) 
+                   void *aux UNUSED) 
 {
    ASSERT(a!=NULL);
    ASSERT(b!=NULL);
@@ -423,7 +423,7 @@ thread_exit (void)
 /*Compare two list_elem and return true if first elem has greater priority*/
 static bool
 compare_greater_priority(const struct list_elem *a, const struct list_elem *b,
-   void *aux UNUSED)
+                         void *aux UNUSED)
 {
    ASSERT(a!=NULL);
    ASSERT(b!=NULL);
@@ -439,23 +439,29 @@ compare_greater_priority(const struct list_elem *a, const struct list_elem *b,
 void
 thread_yield (void) 
 {
-  struct thread *cur = thread_current ();
+  thread_specific_yield(thread_current());
+}
+
+void
+thread_specific_yield (struct thread *t)
+{
   enum intr_level old_level;
   
+  ASSERT (is_thread(t));
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread)
+  if (t != idle_thread)
   {
     /*list_push_back (&ready_list, &cur->elem);*/
     /* We change the ready_list into an ordered list.  
        This will ensure that the thread with the highest 
        priority is at the front
     */
-    list_insert_ordered(&ready_list,&cur->elem,compare_greater_priority,NULL);
+    list_insert_ordered(&ready_list,&t->elem,compare_greater_priority,NULL);
   }
 
-  cur->status = THREAD_READY;
+  t->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
 }
@@ -481,28 +487,40 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
+  thread_specific_set_priority (new_priority, thread_current(), false);
+}
+
+void
+thread_specific_set_priority (int new_priority, struct thread *t, bool donated)
+{
   enum intr_level old_level;
   old_level = intr_disable();
 
-  struct thread *cur = thread_current();
-
-  ASSERT(is_thread(cur));
+  ASSERT(is_thread(t));
   ASSERT(new_priority >= PRI_MIN && new_priority <= PRI_MAX);
   
-  /*
-  */
-  cur->priority = new_priority;
-  if (cur->status == THREAD_READY)
+  if (donated)
   {
-    list_remove (&cur->elem);
-    list_insert_ordered(&ready_list, &cur->elem, compare_greater_priority, NULL);
+    t->priority = new_priority;
+    t->donated = true;
+  }
+  else
+  {
+    t->prev_priority = new_priority;
+    if (!t->donated || t->priority <= new_priority) t->priority = new_priority;
+  }
+
+  if (t->status == THREAD_READY)
+  {
+    list_remove (&t->elem);
+    list_insert_ordered(&ready_list, &t->elem, compare_greater_priority, NULL);
   } 
-  else if (cur-> status == THREAD_RUNNING)
+  else if (t-> status == THREAD_RUNNING)
   {
     if (list_entry (list_begin (&ready_list), struct thread, elem)->priority 
-        > cur->priority) 
+        > t->priority) 
     {
-      thread_yield();
+      thread_specific_yield(t);
     }
   } 
   intr_set_level (old_level);
@@ -632,6 +650,10 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->prev_priority = priority;
+  t->donated = false;
+  list_init(&t->lock_list);
+  t->locker = NULL;
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();

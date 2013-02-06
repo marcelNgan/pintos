@@ -4,6 +4,12 @@
 #include <list.h>
 #include <stdbool.h>
 
+typedef int a, b;            /* function for max() */
+#define MAX(a, b) ((a) > (b) ? (a): (b))
+
+#define INITIAL_PRIORITY -1    /*set priority to be out of its boundary*/
+#define MAX_DONATION 8         /* limit on depth of nested priority donation*/
+
 /* A counting semaphore. */
 struct semaphore 
   {
@@ -22,6 +28,8 @@ struct lock
   {
     struct thread *holder;      /* Thread holding lock (for debugging). */
     struct semaphore semaphore; /* Binary semaphore controlling access. */
+    struct list_elem lock_elem; /* List element of a lock*/
+    int lock_priority;          /* Highest priority in its waiters list*/
   };
 
 void lock_init (struct lock *);
