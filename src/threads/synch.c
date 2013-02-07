@@ -39,7 +39,7 @@ static bool compare_greater_lock_priority (const struct list_elem *a,
                                             const struct list_elem *b,
                                             void *aux UNUSED);
 
-static bool compare_greater_lock_semaphore (const struct list_elem *a,
+static bool compare_greater_semaphore_priority (const struct list_elem *a,
                                             const struct list_elem *b,
                                             void *aux UNUSED);
 
@@ -376,9 +376,9 @@ struct semaphore_elem
     int sema_priority;
   };
 
-static bool compare_greater_lock_semaphore (const struct list_elem *a,
-                                            const struct list_elem *b,
-                                            void *aux UNUSED)
+static bool compare_greater_semaphore_priority (const struct list_elem *a,
+                                                const struct list_elem *b,
+                                                void *aux UNUSED)
 {
   ASSERT(a!=NULL);
   ASSERT(b!=NULL);
@@ -440,7 +440,7 @@ cond_wait (struct condition *cond, struct lock *lock)
   */
   waiter.sema_priority = thread_current()->priority;
   list_insert_ordered(&cond->waiters, &waiter.elem, 
-                      compare_greater_lock_semaphore, NULL);
+                      compare_greater_semaphore_priority, NULL);
   lock_release (lock);
   sema_down (&waiter.semaphore);
   lock_acquire (lock);
