@@ -12,6 +12,7 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #include "devices/timer.h"
+#include "threads/fixed-point.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -32,7 +33,6 @@ static struct list block_list;
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
-
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -82,6 +82,9 @@ static bool sleep_ticks_less (const struct list_elem *a,
 static bool compare_greater_priority (const struct list_elem *a,
                                        const struct list_elem *b,
                                        void *aux UNUSED);
+
+/* fixed-point int for BSD scheduling */
+static int load_avg;
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -225,6 +228,14 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+
+  if (thread_mlfqs)
+  {
+    calculate_recent_cpu (t, NULL);
+    calculate_BSD_priority (t, NULL);
+    thread_calculate_recent_cpu ();
+    thread_calculate_BSD_priority ();
+  }
 
   if (t->priority > thread_current()->priority)
   {
@@ -526,6 +537,138 @@ thread_specific_set_priority (int new_priority, struct thread *t, bool donated)
   intr_set_level (old_level);
 }
 
+/* Calculate BSD priority */
+void
+thread_calculate_BSD_priority (void)
+{
+  calculate_BSD_priority(thread_current(), NULL);
+}
+
+/* Calculate BSD proiority for all threads (all_list)
+ */
+void
+calculate_BSD_priority_all(void)
+{
+  thread_foreach (calculate_BSD_priority, NULL);
+  /* resort ready_list */
+  if (!list_empty (&ready_list))
+    {
+      list_sort (&ready_list, compare_greater_priority, NULL);
+    }
+}
+
+/* Calculate advanced priority.
+ * Thread priority is calculated initially at thread initialization.
+ * It is also recalculated once every fourth clock tick, for every thread.
+ * In either case, it is determined by the formula
+ * priority = PRI_MAX - (recent_cpu / 4) - (nice * 2)
+ */
+void
+calculate_BSD_priority (struct thread *cur, void *aux UNUSED)
+{
+  ASSERT (is_thread (cur));
+  if (cur != idle_thread)
+  {
+     /* convert to integer nearest for (recent_cpu / 4) instead
+     * of the whole priority.
+     */
+    cur->priority = PRI_MAX - ROUND(DIV_INT (cur->recent_cpu, 4)) 
+	- (cur->nice * 2);
+
+    /* Make sure it falls in the priority boundry */
+    if (cur->priority < PRI_MIN)
+    {
+      cur->priority = PRI_MIN;
+    }
+    else if (cur->priority > PRI_MAX)
+    {
+      cur->priority = PRI_MAX;
+    }
+  }
+}
+
+/* Calculate recent_cpu for a thread */
+void
+thread_calculate_recent_cpu (void)
+{
+  calculate_recent_cpu (thread_current (), NULL);
+}
+
+/* Once per second the value of recent_cpu is recalculated
+ * for every thread (whether running, ready, or blocked)
+ */
+void
+calculate_recent_cpu_all (void)
+{
+  thread_foreach (calculate_recent_cpu, NULL);
+}
+
+/* Calculate recent_cpu
+ * recent_cpu = (2*load_avg)/(2*load_avg + 1) * recent_cpu + nice
+ * Assumptions made by some of the tests require that these recalculations
+ * of recent_cpu be made exactly when the system tick counter reaches a
+ * multiple of a second, that is, when timer_ticks () % TIMER_FREQ == 0,
+ * and not at any other time.
+ *
+ * The value of recent_cpu can be negative for a thread with a negative nice
+ * value. Do not clamp negative recent_cpu to 0.
+
+ * You may need to think about the order of calculations in this formula.
+ * We recommend computing the coefficient of recent_cpu first, then
+ * multiplying. Some students have reported that multiplying load_avg by
+ * recent_cpu directly can cause overflow.
+ */
+void
+calculate_recent_cpu (struct thread *cur, void *aux UNUSED)
+{
+  ASSERT (is_thread (cur));
+  if (cur != idle_thread)
+    {
+      /* load_avg and recent_cpu are fixed-point numbers */
+      int load = MULT_INT (load_avg, 2);
+      int coefficient = DIV (load, ADD_INT (load, 1));
+      cur->recent_cpu = ADD_INT (MULT (coefficient, cur->recent_cpu),
+                                 cur->nice);
+    }
+}
+
+/* Calculate load_avg.
+ * load_avg, often known as the system load average, estimates the average
+ * number of threads ready to run over the past minute. Like recent_cpu, it is
+ * an exponentially weighted moving average. Unlike priority and recent_cpu,
+ * load_avg is system-wide, not thread-specific. At system boot, it is
+ * initialized to 0. Once per second thereafter, it is updated according to
+ * the following formula:
+ * load_avg = (59/60)*load_avg + (1/60)*ready_threads
+ * where ready_threads is the number of threads that are either running or
+ * ready to run at time of update (not including the idle thread).
+
+ * Because of assumptions made by some of the tests, load_avg must be updated
+ * exactly when the system tick counter reaches a multiple of a second, that
+ * is, when timer_ticks () % TIMER_FREQ == 0, and not at any other time.
+ */
+void
+calculate_load_avg (void)
+{
+  struct thread *cur;
+  int ready_list_threads;
+  int ready_threads;
+
+  cur = thread_current ();
+  ready_list_threads = list_size (&ready_list);
+
+  if (cur != idle_thread)
+    {
+      ready_threads = ready_list_threads + 1;
+    }
+  else
+    {
+      ready_threads = ready_list_threads;
+    }
+  load_avg = MULT (DIV_INT (CONVERT_TO_FP (59), 60), load_avg) +
+    MULT_INT (DIV_INT (CONVERT_TO_FP (1), 60), ready_threads);
+}
+
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) 
@@ -535,33 +678,64 @@ thread_get_priority (void)
 
 /* Sets the current thread's nice value to NICE. */
 void
-thread_set_nice (int nice UNUSED) 
+thread_set_nice (int new_nice)
 {
-  /* Not yet implemented. */
+  ASSERT (new_nice >= NICE_MIN && new_nice <= NICE_MAX);
+  struct thread *cur;
+
+  cur = thread_current ();
+  cur->nice = new_nice;
+
+  thread_calculate_BSD_priority ();
+  /* If the current thread's status is THREAD_READY, then just reinsert it
+   * to the ready_list in order to keep the ready_list in order; if its status
+   * is THREAD_RUNNING, then compare its priority with the largest one's
+   * priority in the ready_list: if the current one's is smaller, then yields
+   * the CPU.
+   */
+  if (cur != idle_thread)
+    {
+      if (cur->status == THREAD_READY)
+        {
+          enum intr_level old_level;
+          old_level = intr_disable ();
+          list_remove (&cur->elem);
+          list_insert_ordered (&ready_list, &cur->elem, 
+                                compare_greater_priority, NULL);
+          intr_set_level (old_level);
+        }
+      else if (cur->status == THREAD_RUNNING &&
+               list_entry (list_begin (&ready_list),
+                           struct thread,
+                           elem
+                           )->priority > cur->priority
+               )
+        {
+          thread_specific_yield (cur);
+        }
+    }
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return thread_current ()->nice;
 }
 
 /* Returns 100 times the system load average. */
 int
 thread_get_load_avg (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return ROUND (MULT_INT (load_avg, 100));
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return ROUND (MULT_INT (thread_current ()->recent_cpu,
+                                           100));
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -654,6 +828,20 @@ init_thread (struct thread *t, const char *name, int priority)
   list_init(&t->lock_list);
   t->locker = NULL;
   t->magic = THREAD_MAGIC;
+
+  if (thread_mlfqs)
+  {
+    if (t == initial_thread)
+    {
+      t->nice = NICE_DEFAULT;       
+      t->recent_cpu = RECENT_CPU_DEFAULT;      
+    }
+    else
+    {
+      t->nice = thread_get_nice ();
+      t->recent_cpu = thread_get_recent_cpu ();
+    }
+  }
 
   list_push_back (&all_list, &t->allelem);
 }

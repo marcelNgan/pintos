@@ -268,7 +268,7 @@ lock_acquire (struct lock *lock)
   
   if (lock_holder != NULL) cur->locker = lock;
 
-  while(lock_holder != NULL && lock_holder -> priority < cur -> priority)
+  while(!thread_mlfqs && lock_holder != NULL && lock_holder -> priority < cur -> priority)
   {
     thread_specific_set_priority(cur->priority, lock_holder, true);
     lock_next->lock_priority = MAX (lock_next->lock_priority, cur-> priority);
@@ -284,10 +284,13 @@ lock_acquire (struct lock *lock)
   sema_down (&lock->semaphore);
   lock->holder = cur;
 
-  cur->locker = NULL;
+  if (!thread_mlfqs)
+  {  
+    cur->locker = NULL;
   
-  list_insert_ordered (&cur->lock_list, &lock -> lock_elem, 
+    list_insert_ordered (&cur->lock_list, &lock -> lock_elem, 
                        compare_greater_lock_priority, NULL);
+  }
   
   intr_set_level (old_level);
 }
@@ -333,24 +336,27 @@ lock_release (struct lock *lock)
   lock->holder = NULL;
   sema_up (&lock->semaphore);
   
-  list_remove (&lock->lock_elem);
-  lock->lock_priority = INITIAL_PRIORITY;
+  if (!thread_mlfqs)
+  {
+    list_remove (&lock->lock_elem);
+    lock->lock_priority = INITIAL_PRIORITY;
   
-  if (list_empty(&cur->lock_list))
-  {
-    cur->donated = false;
-    thread_set_priority(cur->prev_priority);
-  }
-  else
-  {
-    l = list_entry (list_front (&cur->lock_list), struct lock, lock_elem);
-    if (l->lock_priority != INITIAL_PRIORITY) 
+    if (list_empty(&cur->lock_list))
     {
-      thread_specific_set_priority (l->lock_priority, cur, true);
+      cur->donated = false;
+      thread_set_priority(cur->prev_priority);
     }
-    else 
+    else
     {
-      thread_specific_set_priority (cur->prev_priority, cur, false);
+      l = list_entry (list_front (&cur->lock_list), struct lock, lock_elem);
+      if (l->lock_priority != INITIAL_PRIORITY) 
+      {
+        thread_specific_set_priority (l->lock_priority, cur, true);
+      }
+      else 
+      {
+        thread_specific_set_priority (cur->prev_priority, cur, false);
+      }
     }
   }
   

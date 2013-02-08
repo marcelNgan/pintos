@@ -28,6 +28,12 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+#define NICE_MIN -20
+#define NICE_MAX 20
+#define NICE_DEFAULT 0
+
+#define RECENT_CPU_DEFAULT 0
+
 /* A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -110,6 +116,10 @@ struct thread
     bool donated;             /* check if the thread's priority is donated */
     struct list lock_list;  /* a list of all the locks held by the thread */
     struct lock *locker;    /*the lock blocking the thread */   
+
+
+   int nice;               /*The nice value of the thread*/
+   int recent_cpu;        /*The amount of cpu used by the thread recently*/ 
   };
 
 /* If false (default), use round-robin scheduler.
@@ -151,6 +161,16 @@ void thread_set_priority (int);
    thread and also priority donation is checked
 */
 void thread_specific_set_priority (int new_priority, struct thread *t, bool donated);
+
+// BSD functions
+void calculate_load_avg (void);
+void thread_calculate_BSD_priority (void);
+void calculate_BSD_priority_all(void);
+void calculate_BSD_priority (struct thread *cur, void *aux UNUSED);
+void thread_calculate_recent_cpu (void);
+void calculate_recent_cpu_all (void);
+void calculate_recent_cpu (struct thread *cur, void *aux UNUSED);
+
 
 int thread_get_nice (void);
 void thread_set_nice (int);
