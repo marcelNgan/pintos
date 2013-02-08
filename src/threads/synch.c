@@ -238,7 +238,7 @@ compare_greater_lock_priority(const struct list_elem *a,
   const struct lock *lockA = list_entry(a, struct lock, lock_elem);
   const struct lock *lockB = list_entry(b, struct lock, lock_elem);
 
-  return (lockA->lock_priority > lockB->lock_priority);
+  return (lockA->lock_priority >= lockB->lock_priority);
 }
 
 
