@@ -76,7 +76,7 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
-static bool sleep_ticks_less (const struct list_elem *a,
+static bool compare_less_ticks (const struct list_elem *a,
                                const struct list_elem *b,
                                void *aux UNUSED);
 static bool compare_greater_priority (const struct list_elem *a,
@@ -114,6 +114,8 @@ thread_init (void)
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
+  /* the load avg is initialized to 0 at system boot */
+  load_avg = 0;
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -545,6 +547,7 @@ thread_calculate_BSD_priority (void)
 }
 
 /* Calculate BSD proiority for all threads (all_list)
+   Every fourth tick, it recalculates every thread.
  */
 void
 calculate_BSD_priority_all(void)
@@ -557,11 +560,10 @@ calculate_BSD_priority_all(void)
     }
 }
 
-/* Calculate advanced priority.
- * Thread priority is calculated initially at thread initialization.
- * It is also recalculated once every fourth clock tick, for every thread.
- * In either case, it is determined by the formula
- * priority = PRI_MAX - (recent_cpu / 4) - (nice * 2)
+/* Calculate advanced priority by the following formula:
+ * priority = PRI_MAX-(recent_cpu/4)-(nice*2)
+ * Thread priority is calculated when we initialize the thread and 
+ * also every fourth clock tick
  */
 void
 calculate_BSD_priority (struct thread *cur, void *aux UNUSED)
@@ -569,13 +571,10 @@ calculate_BSD_priority (struct thread *cur, void *aux UNUSED)
   ASSERT (is_thread (cur));
   if (cur != idle_thread)
   {
-     /* convert to integer nearest for (recent_cpu / 4) instead
-     * of the whole priority.
-     */
     cur->priority = PRI_MAX - ROUND(DIV_INT (cur->recent_cpu, 4)) 
-	- (cur->nice * 2);
+	            - (cur->nice * 2);
 
-    /* Make sure it falls in the priority boundry */
+    /* If the priority is not in the preset rangem, we have to correct it. */
     if (cur->priority < PRI_MIN)
     {
       cur->priority = PRI_MIN;
@@ -587,15 +586,14 @@ calculate_BSD_priority (struct thread *cur, void *aux UNUSED)
   }
 }
 
-/* Calculate recent_cpu for a thread */
+/* Calculate recent_cpu*/
 void
 thread_calculate_recent_cpu (void)
 {
   calculate_recent_cpu (thread_current (), NULL);
 }
 
-/* Once per second the value of recent_cpu is recalculated
- * for every thread (whether running, ready, or blocked)
+/* the value of recent_cpu has to be recalculated once every second.
  */
 void
 calculate_recent_cpu_all (void)
@@ -603,20 +601,9 @@ calculate_recent_cpu_all (void)
   thread_foreach (calculate_recent_cpu, NULL);
 }
 
-/* Calculate recent_cpu
- * recent_cpu = (2*load_avg)/(2*load_avg + 1) * recent_cpu + nice
- * Assumptions made by some of the tests require that these recalculations
- * of recent_cpu be made exactly when the system tick counter reaches a
- * multiple of a second, that is, when timer_ticks () % TIMER_FREQ == 0,
- * and not at any other time.
- *
- * The value of recent_cpu can be negative for a thread with a negative nice
- * value. Do not clamp negative recent_cpu to 0.
-
- * You may need to think about the order of calculations in this formula.
- * We recommend computing the coefficient of recent_cpu first, then
- * multiplying. Some students have reported that multiplying load_avg by
- * recent_cpu directly can cause overflow.
+/* Calculate recent_cpu by the formula:
+ * recent_cpu = (2*load_avg)/(2*load_avg + 1) * recent_cpu + nice.
+ * A thread with a -ve nice value might have a -ve recent_cpu value.
  */
 void
 calculate_recent_cpu (struct thread *cur, void *aux UNUSED)
@@ -632,20 +619,12 @@ calculate_recent_cpu (struct thread *cur, void *aux UNUSED)
     }
 }
 
-/* Calculate load_avg.
- * load_avg, often known as the system load average, estimates the average
- * number of threads ready to run over the past minute. Like recent_cpu, it is
- * an exponentially weighted moving average. Unlike priority and recent_cpu,
- * load_avg is system-wide, not thread-specific. At system boot, it is
- * initialized to 0. Once per second thereafter, it is updated according to
- * the following formula:
+/* Calculate system load average by the formula:
+ * At system boot, it is initialized to 0. Every second it is calculated and 
+ * updated by the following formula:
  * load_avg = (59/60)*load_avg + (1/60)*ready_threads
  * where ready_threads is the number of threads that are either running or
  * ready to run at time of update (not including the idle thread).
-
- * Because of assumptions made by some of the tests, load_avg must be updated
- * exactly when the system tick counter reaches a multiple of a second, that
- * is, when timer_ticks () % TIMER_FREQ == 0, and not at any other time.
  */
 void
 calculate_load_avg (void)
@@ -687,11 +666,11 @@ thread_set_nice (int new_nice)
   cur->nice = new_nice;
 
   thread_calculate_BSD_priority ();
-  /* If the current thread's status is THREAD_READY, then just reinsert it
-   * to the ready_list in order to keep the ready_list in order; if its status
-   * is THREAD_RUNNING, then compare its priority with the largest one's
-   * priority in the ready_list: if the current one's is smaller, then yields
-   * the CPU.
+  /* If the thread's status is THREAD_READY, then we can just 
+   * remove the thread from the list and reinsert it in the proper order.
+   * However, if the thread's status is THREAD_RUNNING, then we will have to 
+   * check its priority with the largest priority in the ready_list.
+     If it is smaller, then we will have to yield the CPU.
    */
   if (cur != idle_thread)
     {
@@ -705,11 +684,8 @@ thread_set_nice (int new_nice)
           intr_set_level (old_level);
         }
       else if (cur->status == THREAD_RUNNING &&
-               list_entry (list_begin (&ready_list),
-                           struct thread,
-                           elem
-                           )->priority > cur->priority
-               )
+               list_entry (list_begin (&ready_list), struct thread, elem)
+               -> priority > cur->priority)
         {
           thread_specific_yield (cur);
         }
