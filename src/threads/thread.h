@@ -112,6 +112,7 @@ struct thread
     unsigned magic;                     /* Detects stack overflow. */
 
     int64_t wakeup_tick;       /* used by Alarm clock to wake up the thread */
+    //struct semaphore timer_sema;
     int prev_priority;     /* the thread's priority before donation */
     bool donated;             /* check if the thread's priority is donated */
     struct list lock_list;  /* a list of all the locks held by the thread */

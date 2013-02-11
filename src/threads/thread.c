@@ -331,6 +331,7 @@ thread_sleep(int64_t ticks)
 
   /* block thread and add to block queue */
   list_insert_ordered(&block_list, &cur->elem, compare_less_ticks, NULL);
+  //sema_down(&cur->timer_sema);
   thread_block();
 
   /* reset interrupts */
@@ -371,6 +372,7 @@ thread_wakeup(void) {
     next_elem = list_next(current_elem);    
     list_remove (current_elem);
     current_elem = next_elem;
+    //sema_up(&t->timer_sema);
     thread_unblock (t);
 
 
@@ -796,6 +798,7 @@ init_thread (struct thread *t, const char *name, int priority)
 
   memset (t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;
+  //sema_init(&t->timer_sema,0);
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
