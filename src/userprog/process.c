@@ -15,6 +15,7 @@
 #include "threads/init.h"
 #include "threads/interrupt.h"
 #include "threads/palloc.h"
+#include "threads/malloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
@@ -30,6 +31,8 @@ process_execute (const char *file_name)
 {
   char *fn_copy;
   tid_t tid;
+  struct child *child;
+  struct thread *cur;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
@@ -38,10 +41,28 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  /* Split fn_copy into program name and arguments */
+  char *prog_name, *args;
+  prog_name = strtok_r (fn_copy, " ", &args);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /*  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);*/
+  tid = thread_create (prog_name, PRI_DEFAULT, start_process, args);
+  
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    palloc_free_page (fn_copy);
+  else
+  {
+    cur = thread_current();
+    child = calloc (1,sizeof *child);
+    if (child != NULL)
+    {
+      child->cid = tid;
+      child->exit_call = false;
+      child->wait_call = false;
+      list_push_back(&cur->children, &child->elem_child);
+    }
+  }
   return tid;
 }
 
@@ -53,6 +74,9 @@ start_process (void *file_name_)
   char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
+  int load_success;
+  struct thread *cur;
+  struct thread *parent;
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -63,9 +87,24 @@ start_process (void *file_name_)
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  if (!success) 
+  if (!success)
+    load_success = -1;
+  else
+    load_success = 1;
+
+  cur = thread_current();
+  parent = get_thread(cur->pid);
+  if (parent != NULL)
+  {
+    lock_acquire(&parent->child_lock);
+    parent->child_load_success = load_success;
+    cond_signal(&parent->child_cond, &parent->child_lock);
+    lock_release(&parent->child_lock);    
+  }
+  if (!success)
     thread_exit ();
 
+  palloc_free_page(pg_round_down(file_name));
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -86,9 +125,43 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  int status;
+  struct thread *cur;
+  struct child *child;
+  struct list_elem *e;
+  if (child_tid != TID_ERROR)
+  {
+    cur = thread_current();
+    e = list_tail (&cur->children);
+    while ((e = list_prev(e)) != list_head(&cur->children))
+    {
+      child = list_entry(e, struct child, elem_child);
+      if (child->cid == child_tid)
+        break;
+    }
+    if (child == NULL)
+      status = -1;
+    else
+    {
+      lock_acquire(&cur->child_lock);
+      while(get_thread(child_tid)!= NULL)
+        cond_wait (&cur->child_cond, &cur->child_lock);
+      if (!child->exit_call || child->wait_call)
+        status = -1;
+      else
+      {
+        status = child->exit_status;
+        child->wait_call = true;
+      }
+      lock_release(&cur->child_lock);
+    }
+  } else
+  {
+    status = TID_ERROR;
+  }
+  return status;
 }
 
 /* Free the current process's resources. */

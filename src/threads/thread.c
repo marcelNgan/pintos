@@ -205,6 +205,7 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+  t->pid = thread_current ()->tid;
 
   /* Prepare thread for first run by initializing its stack.
      Do this atomically so intermediate values for the 'stack' 
@@ -821,6 +822,13 @@ init_thread (struct thread *t, const char *name, int priority)
       t->recent_cpu = thread_get_recent_cpu ();
     }
   }
+#ifdef USERPROG
+  t->child_load_success;
+  lock_init(&t->child_lock);
+  cond_init(&t->child_cond);
+  list_init(&t->children);
+#endif
+
 
   list_push_back (&all_list, &t->allelem);
 }
@@ -938,3 +946,23 @@ allocate_tid (void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+struct thread
+*get_thread(tid_t id)
+{
+  ASSERT (id != TID_ERROR);
+  struct list_elem *e;
+  struct thread *t;
+  e = list_tail (&all_list);
+  while ((e = list_prev(e)) != list_head(&all_list))
+  {
+    t = list_entry (e, struct thread, allelem);
+    if (t->tid == id && t-> status != THREAD_DYING)
+      return t;
+  }
+  return NULL;
+}
+
+
+
+

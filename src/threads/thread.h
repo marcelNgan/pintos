@@ -6,7 +6,6 @@
 #include <stdint.h>
 #include "threads/synch.h"
 #include "filesys/file.h"
-#include "lib/kernel/hash.h"
 
 
 /* States in a thread's life cycle. */
@@ -90,6 +89,15 @@ typedef int tid_t;
    only because they are mutually exclusive: only a thread in the
    ready state is on the run queue, whereas only a thread in the
    blocked state is on a semaphore wait list. */
+
+struct child{
+  tid_t cid;                             /*child id*/
+  bool exit_call;
+  bool wait_call;
+  int exit_status;
+  struct list_elem elem_child;
+};
+
 struct thread
   {
     /* Owned by thread.c. */
@@ -106,6 +114,15 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    tid_t pid;                           /*parent id*/
+    int child_load_success;
+    struct lock child_lock;
+    struct condition child_cond;
+
+    /*a list of children of type child*/
+    struct list children;
+    struct file *exec_file;
+    
 #endif
 
     /* Owned by thread.c. */
@@ -177,5 +194,5 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
-
+struct thread * get_thread(tid_t);
 #endif /* threads/thread.h */
