@@ -11,6 +11,7 @@
 #include "threads/malloc.h"
 #include "filesys/file.h"
 #include "devices/input.h"
+#include "threads/synch.h"
 
 struct file_descriptor
 {
@@ -185,20 +186,24 @@ static bool remove (const char *file){
 }
 
 static int open (const char *file){
-/*  struct file *f;
+
+  struct file *f;
   struct file_descriptor *fd;
-  int status;
+  int status = -1;
+
   if (!is_valid_pointer(file))
     exit(-1);
-  lock_acqure(&fileLock);
+  
+  lock_acquire(&fileLock);
   f = filesys_open(file);
   if (f != NULL)
   {
     fd = calloc (1, sizeof *fd);
-    fd->fd_num = allocate_fd();
+    fd->fd_num = fd_allocation();
   } else
-    status = -1; */
-  return 0;
+    status = -1;
+  lock_release(&fileLock); 
+  return status;
 }
 
 static int filesize (int fd){
@@ -234,6 +239,12 @@ bool is_valid_pointer(const void *pointer)
     return true;
   else
     return false;
+}
+
+int fd_allocation()
+{
+  static int fd_current = 1;
+  return ++fd_current;
 }
 
 

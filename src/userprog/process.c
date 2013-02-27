@@ -77,8 +77,8 @@ start_process (void *file_name_)
   int load_success;
   struct thread *cur;
   struct thread *parent;
-
-  /* Initialize interrupt frame and load executable. */
+   
+ /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
@@ -86,7 +86,7 @@ start_process (void *file_name_)
   success = load (file_name, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  //palloc_free_page (file_name);
   if (!success)
     load_success = -1;
   else
@@ -127,6 +127,7 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid) 
 {
+
   int status;
   struct thread *cur;
   struct child *child;
@@ -146,7 +147,7 @@ process_wait (tid_t child_tid)
     else
     {
       lock_acquire(&cur->child_lock);
-      while(get_thread(child_tid)!= NULL)
+     while(get_thread(child_tid)!= NULL)
         cond_wait (&cur->child_cond, &cur->child_lock);
       if (!child->exit_call || child->wait_call)
         status = -1;
@@ -388,7 +389,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   file_close (file);
   return success;
 }
-
+
 /* load() helpers. */
 
 static bool install_page (void *upage, void *kpage, bool writable);
