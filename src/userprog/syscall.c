@@ -18,10 +18,11 @@ struct file_descriptor
   int fd_num;
   tid_t file_owner;
   struct file *file;
-  struct list_elem elem;  
+  struct list_elem file_elem;  
 };
 
 static void syscall_handler (struct intr_frame *);
+struct list open_file_list; 
 
 /*Possible system calls*/
 static void halt (void);
@@ -45,6 +46,7 @@ syscall_init (void)
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
   lock_init(&fileLock);
+  list_init(&open_file_list);
 }
 
 static void
@@ -114,7 +116,8 @@ halt (void) {
 }
 
 static void 
-exit (int status) {
+exit (int status) 
+{
   struct child *child;
   struct thread *cur;
   struct thread *parent;
@@ -140,7 +143,8 @@ exit (int status) {
   thread_exit();
 }
 
-static pid_t exec (const char *cmd_line){
+static pid_t exec (const char *cmd_line)
+{
   tid_t tid;
   struct thread *cur;
   if (!is_valid_pointer(cmd_line))
@@ -159,11 +163,13 @@ static pid_t exec (const char *cmd_line){
   return tid;
 }
 
-static int wait (pid_t pid){
+static int wait (pid_t pid)
+{
   return process_wait(pid);
 }
 
-static bool create (const char *file, unsigned initial_size){
+static bool create (const char *file, unsigned initial_size)
+{
   bool status;
 
   if (!is_valid_pointer(file))
@@ -174,7 +180,8 @@ static bool create (const char *file, unsigned initial_size){
   return status;
 }
 
-static bool remove (const char *file){
+static bool remove (const char *file)
+{
   bool status;
 
   if (!is_valid_pointer(file))
@@ -185,7 +192,8 @@ static bool remove (const char *file){
   return status;
 }
 
-static int open (const char *file){
+static int open (const char *file)
+{
 
   struct file *f;
   struct file_descriptor *fd;
@@ -199,43 +207,145 @@ static int open (const char *file){
   if (f != NULL)
   {
     fd = calloc (1, sizeof *fd);
-    fd->fd_num = fd_allocation();
-  } else
-    status = -1;
+    fd-> fd_num = fd_allocation();
+    fd-> file_owner = thread_current();
+    fd-> file = f;
+    list_push_back (&open_file_list, &fd->file_elem);
+    status = fd->fd_num;
+  } 
   lock_release(&fileLock); 
   return status;
 }
 
-static int filesize (int fd){
-  return 0;
+
+static int filesize (int fd)
+{  
+  struct file_descriptor *struct_fd;
+  int status = -1;
+
+  lock_acquire (&fileLock); 
+  struct_fd = get_current_file(fd);
+  if (struct_fd != NULL)
+    status = file_length (struct_fd->file);
+  lock_release (&fileLock);
+
+  return status;
 }
 
-static int read (int fd, void *buffer, unsigned size){
-  return 0;
+static int read (int fd, void *buffer, unsigned size)
+{
+  struct file_descriptor *struct_fd;
+  int status = 0; 
+
+  if (!is_valid_pointer(buffer) || !is_valid_pointer(buffer + size - 1))
+    exit (-1);
+
+  lock_acquire (&fileLock); 
+  
+  if (fd == STDOUT_FILENO)
+    {
+      lock_release (&fileLock);
+      return -1;
+	}
+
+  if (fd == STDIN_FILENO)
+    {
+      uint8_t c;
+      unsigned counter = size;
+      uint8_t *buf = buffer;
+      while (counter > 1 && (c = input_getc()) != 0)
+        {
+          *buf = c;
+          buffer++;
+          counter--; 
+        }
+      *buf = 0;
+      lock_release (&fileLock);
+      return (size - counter);
+    } 
+  
+  struct_fd = get_current_file (fd);
+  if (struct_fd != NULL)
+    status = file_read (struct_fd->file, buffer, size);
+
+  lock_release (&fileLock);
+  return status;
 }
 
-static int write (int fd, const void *buffer, unsigned size){
-  return 0;
+
+static int write (int fd, const void *buffer, unsigned size)
+{
+  struct file_descriptor *struct_fd;  
+  int status = 0;
+
+  if (!is_valid_pointer(buffer) || !is_valid_pointer(buffer + size - 1))
+    exit (-1);
+
+  lock_acquire (&fileLock); 
+
+  if (fd == STDIN_FILENO)
+    {
+      lock_release(&fileLock);
+      return -1;
+    }
+
+  if (fd == STDOUT_FILENO)
+    {
+      putbuf (buffer, size);
+      lock_release(&fileLock);
+      return size;
+    }
+ 
+  struct_fd = get_current_file (fd);
+  if (struct_fd != NULL)
+    status = file_write (struct_fd->file, buffer, size);
+  lock_release (&fileLock);
+  
+  return status;
 }
 
-static void seek (int fd, unsigned position){
-
+static void seek (int fd, unsigned position)
+{
+  struct file_descriptor *struct_fd;
+  
+  lock_acquire (&fileLock); 
+  struct_fd = get_current_file (fd);
+  if (struct_fd != NULL)
+    file_seek (struct_fd->file, position);
+  lock_release (&fileLock);
 }
 
-static unsigned tell (int fd){
-  return 0;
+static unsigned tell (int fd)
+{
+  struct file_descriptor *struct_fd;
+  int status = 0;
+  lock_acquire (&fileLock); 
+  struct_fd = get_current_file (fd);
+  if (struct_fd != NULL)
+    status = file_tell (struct_fd->file);
+  lock_release (&fileLock);
+  return status;
 }
 
-static void close (int fd){
+static void close (int fd)
+{
+  struct file_descriptor *struct_fd;
 
+  lock_acquire (&fileLock); 
+
+  struct_fd = get_current_file (fd);
+  if (struct_fd != NULL && struct_fd->file_owner == thread_current ()->tid)
+    close_current_file (fd);
+
+  lock_release (&fileLock);
 }
 
 bool is_valid_pointer(const void *pointer)
 {
-  struct thread *cur;
-  cur = thread_current();
+  struct thread *current;
+  current = thread_current();
   if (pointer != NULL && is_user_vaddr (pointer) &&
-      pagedir_get_page (cur->pagedir, pointer) != NULL)
+      pagedir_get_page (current->pagedir, pointer) != NULL)
     return true;
   else
     return false;
@@ -248,5 +358,59 @@ int fd_allocation()
 }
 
 
+void close_owned_file (tid_t tid)
+{
+	struct list_elem *e;
+	struct list_elem *next;
+	struct file_descriptor *fd_struct;
+	e = list_begin (&open_file_list);
+	while (e != list_tail (&open_file_list))
+	{
+		next = list_next (e);
+		fd_struct = list_entry (e, struct file_descriptor, file_elem);
+		if (fd_struct->file_owner == tid)
+		{
+			list_remove (e);
+			file_close (fd_struct->file);
+			free (fd_struct);
+		}
+		e = next;
+	}
+}
 
+struct file_descriptor *get_current_file (int fd)
+{
+  struct list_elem *e;
+  struct file_descriptor *fd_struct; 
+  e = list_tail (&open_file_list);
+  while ((e = list_prev (e)) != list_head (&open_file_list)) 
+  {
+    fd_struct = list_entry (e, struct file_descriptor, file_elem);
+    if (fd_struct->fd_num == fd)
+	return fd_struct;
+  }
+  return NULL;
+}
+
+void close_current_file (int fd)
+{
+  struct list_elem *e;
+  struct list_elem *prev;
+  struct file_descriptor *fd_struct; 
+  e = list_end (&open_file_list);
+  while (e != list_head (&open_file_list)) 
+    {
+      prev = list_prev (e);
+      fd_struct = list_entry (e, struct file_descriptor, file_elem);
+      if (fd_struct->fd_num == fd)
+	{
+	  list_remove (e);
+          file_close (fd_struct->file);
+	  free (fd_struct);
+	  return ;
+	}
+      e = prev;
+    }
+  return ;
+}
 

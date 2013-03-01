@@ -11,6 +11,9 @@ static long long page_fault_cnt;
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
 
+/*the userprog exit with a status -1 if it has invalid address*/
+static void exit(int);
+
 /* Registers handlers for interrupts that can be caused by user
    programs.
 
@@ -148,6 +151,10 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+  /* if the page fault it caused by a write violation, exit the process*/
+  if (!is_valid_pointer(fault_addr))
+    exit (-1);
+  
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
@@ -159,3 +166,30 @@ page_fault (struct intr_frame *f)
   kill (f);
 }
 
+static void 
+exit (int status) 
+{
+  struct child *child;
+  struct thread *cur;
+  struct thread *parent;
+  cur = thread_current();
+  printf("%s: exit(%d)\n", cur->name, status);
+  parent = get_thread(cur->pid);
+  if (parent != NULL)
+  {
+    struct list_elem *e;
+    e = list_tail(&parent->children);
+    while ((e = list_prev(e)) != list_head(&parent->children))
+    {
+      child = list_entry(e, struct child, elem_child);
+      if (child->cid == cur->tid)
+      {
+        lock_acquire (&parent->child_lock);
+        child->exit_call = true;
+        child->exit_status = status;
+        lock_release (&parent->child_lock);
+      }
+    }
+  }
+  thread_exit();
+}

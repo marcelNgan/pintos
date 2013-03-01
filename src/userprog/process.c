@@ -8,6 +8,7 @@
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
+#include "userprog/syscall.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
@@ -130,10 +131,10 @@ process_wait (tid_t child_tid)
 
   int status;
   struct thread *cur;
-  struct child *child;
   struct list_elem *e;
   if (child_tid != TID_ERROR)
   {
+    struct child *child;
     cur = thread_current();
     e = list_tail (&cur->children);
     while ((e = list_prev(e)) != list_head(&cur->children))
@@ -159,9 +160,7 @@ process_wait (tid_t child_tid)
       lock_release(&cur->child_lock);
     }
   } else
-  {
     status = TID_ERROR;
-  }
   return status;
 }
 
@@ -171,6 +170,9 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+  struct thread *parent;
+  struct list_elem *e;
+  struct list_elem *temp;
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -187,6 +189,28 @@ process_exit (void)
       cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
+    }
+
+  e = list_begin(&cur-> children);
+  while (e!= list_tail(&cur-> children))
+    {
+    struct child *child;
+	  temp = list_next(e);
+	  child = list_entry(e, struct child, elem_child);
+	  list_remove(e);
+	  e = temp;
+    }
+  if (cur->file != NULL)
+    file_allow_write(cur->file);
+  close_owned_file(cur->tid);
+  parent = get_thread(cur->pid);
+  if (parent != NULL)
+    {
+	  lock_acquire(&parent->child_lock);
+	  if (parent->child_load_success == 0)
+	    parent->child_load_success = -1;
+	  cond_signal(&parent->child_cond, &parent->child_lock);
+	  lock_release(&parent->child_lock);
     }
 }
 
@@ -269,7 +293,7 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, const char *file_name);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -296,12 +320,17 @@ load (const char *file_name, void (**eip) (void), void **esp)
   process_activate ();
 
   /* Open executable file. */
-  file = filesys_open (file_name);
+  /*file = filesys_open (file_name);*/
+  file = filesys_open (t->name);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", file_name);
+      /*printf ("load: %s: open failed\n", file_name);*/
+      printf ("load: %s: open failed\n", t->name);
       goto done; 
     }
+  t->file = file;
+  file_deny_write(file);
+  
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -312,7 +341,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", file_name);
+      /*printf ("load: %s: error loading executable\n", file_name);*/
+	  printf ("load: %s: error loading executable\n", t->name);
       goto done; 
     }
 
@@ -376,7 +406,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (esp, file_name))
     goto done;
 
   /* Start address. */
@@ -386,7 +416,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
   return success;
 }
 
@@ -501,20 +530,93 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, const char *file_name) 
 {
   uint8_t *kpage;
   bool success = false;
 
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
-    {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
-      else
-        palloc_free_page (kpage);
-    }
+  {
+    success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+    if (success)
+	  {
+      *esp = PHYS_BASE;
+	    uint8_t *argstr_head;
+      char *cmd_name = thread_current ()->name;
+      int strlength;
+      int total_length = 0;
+      /*needed as we have no idea how many arguments are there in total*/
+      int argc = 0;
+
+      /*pushing file_name(argv[3][...], argv[2][...], argv[1][...])*/
+      strlength = strlen(file_name) + 1;
+      *esp -= strlength;
+      memcpy(*esp, file_name, strlength);
+      total_length += strlength;
+
+      /*pushing argv[0][...]*/
+      strlength = strlen(cmd_name) + 1;
+      *esp -= strlength;
+      argstr_head = *esp;
+      memcpy(*esp, cmd_name, strlength);
+      total_length += strlength;
+
+      /*word-align*/
+      *esp -= 4 - total_length % 4;
+
+      /*pushing argv[argc] = null into the stack* (argv[4])*/
+      *esp -= 4;
+      * (uint32_t *) *esp = (uint32_t) NULL;
+
+      /*Setting up the alignment, changing all the ' ' to '\0'*/
+      int i = total_length - 1;
+      /*omitting the starting space and '\0' */
+      while (*(argstr_head + i) == ' ' ||  *(argstr_head + i) == '\0')
+      {
+        if (*(argstr_head + i) == ' ')
+        {
+          *(argstr_head + i) = '\0';
+        }
+        i--;
+      }
+
+      /*pushing arguments' address into the stack(argv[3], argv[2], argv[1])*/
+      char *mark;
+      for (mark = (char *)(argstr_head + i); i > 0;
+           i--, mark = (char*)(argstr_head+i))
+      {
+        if ( (*mark == '\0' || *mark == ' ') &&
+            (*(mark+1) != '\0' && *(mark+1) != ' '))
+        {
+          *esp -= 4;
+          * (uint32_t *) *esp = (uint32_t) mark + 1;
+          argc++;
+        }
+        /* We replace all the ' ' to '\0' as shown in the example*/
+        if (*mark == ' ')
+          *mark = '\0';
+      }
+
+      /*push one more arg, which is the command name, into stack*/
+      *esp -= 4;
+      * (uint32_t *) *esp = (uint32_t) argstr_head;
+      argc++;
+
+      /*push argv*/
+      * (uint32_t *) (*esp - 4) = *(uint32_t *) esp;
+      *esp -= 4;
+
+      /*push argc*/
+      *esp -= 4;
+      * (int *) *esp = argc;
+
+      /*push return address*/
+      *esp -= 4;
+      * (uint32_t *) *esp = 0x0;
+    } else
+      palloc_free_page (kpage);
+  }
   return success;
 }
 

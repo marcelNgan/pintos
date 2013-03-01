@@ -121,7 +121,7 @@ struct thread
 
     /*a list of children of type child*/
     struct list children;
-    struct file *exec_file;
+    struct file *file;
     
 #endif
 
