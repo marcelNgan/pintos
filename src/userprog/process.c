@@ -529,6 +529,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
+/* Transforming setup_stack so it setups our stack here
+   We push everything in the order shown in 4.5.1*/
 static bool
 setup_stack (void **esp, const char *file_name) 
 {
@@ -543,7 +545,7 @@ setup_stack (void **esp, const char *file_name)
 	  {
       *esp = PHYS_BASE;
 	    uint8_t *argstr_head;
-      char *cmd_name = thread_current ()->name;
+      char *prog_name = thread_current ()->name;
       int strlength;
       int total_length = 0;
       /*needed as we have no idea how many arguments are there in total*/
@@ -556,10 +558,10 @@ setup_stack (void **esp, const char *file_name)
       total_length += strlength;
 
       /*pushing argv[0][...]*/
-      strlength = strlen(cmd_name) + 1;
+      strlength = strlen(prog_name) + 1;
       *esp -= strlength;
       argstr_head = *esp;
-      memcpy(*esp, cmd_name, strlength);
+      memcpy(*esp, prog_name, strlength);
       total_length += strlength;
 
       /*word-align*/
