@@ -11,18 +11,8 @@
 #include "threads/malloc.h"
 #include "filesys/file.h"
 #include "devices/input.h"
-#include "threads/synch.h"
-
-struct file_descriptor
-{
-  int fd_num;
-  tid_t file_owner;
-  struct file *file;
-  struct list_elem file_elem;  
-};
 
 static void syscall_handler (struct intr_frame *);
-struct list open_file_list; 
 
 /*Possible system calls*/
 static void halt (void);
@@ -38,8 +28,6 @@ static int write (int, const void *, unsigned);
 static void seek (int, unsigned);
 static unsigned tell (int);
 static void close (int);
-
-bool is_valid_pointer (const void *);
 
 void
 syscall_init (void) 
@@ -208,7 +196,7 @@ static int open (const char *file)
   {
     fd = calloc (1, sizeof *fd);
     fd-> fd_num = fd_allocation();
-    fd-> file_owner = thread_current();
+    fd-> file_owner = thread_current()->tid;
     fd-> file = f;
     list_push_back (&open_file_list, &fd->file_elem);
     status = fd->fd_num;
@@ -357,27 +345,6 @@ int fd_allocation()
   return ++fd_current;
 }
 
-
-void close_owned_file (tid_t tid)
-{
-	struct list_elem *e;
-	struct list_elem *next;
-	struct file_descriptor *fd_struct;
-	e = list_begin (&open_file_list);
-	while (e != list_tail (&open_file_list))
-	{
-		next = list_next (e);
-		fd_struct = list_entry (e, struct file_descriptor, file_elem);
-		if (fd_struct->file_owner == tid)
-		{
-			list_remove (e);
-			file_close (fd_struct->file);
-			free (fd_struct);
-		}
-		e = next;
-	}
-}
-
 struct file_descriptor *get_current_file (int fd)
 {
   struct list_elem *e;
@@ -405,7 +372,7 @@ void close_current_file (int fd)
       if (fd_struct->fd_num == fd)
 	{
 	  list_remove (e);
-          file_close (fd_struct->file);
+    file_close (fd_struct->file);
 	  free (fd_struct);
 	  return ;
 	}

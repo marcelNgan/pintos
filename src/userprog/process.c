@@ -22,6 +22,7 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+void close_owned_file (tid_t tid);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -106,6 +107,7 @@ start_process (void *file_name_)
     thread_exit ();
 
   palloc_free_page(pg_round_down(file_name));
+  
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -159,6 +161,7 @@ process_wait (tid_t child_tid)
       }
       lock_release(&cur->child_lock);
     }
+    
   } else
     status = TID_ERROR;
   return status;
@@ -198,6 +201,7 @@ process_exit (void)
 	  temp = list_next(e);
 	  child = list_entry(e, struct child, elem_child);
 	  list_remove(e);
+    free(child);
 	  e = temp;
     }
   if (cur->file != NULL)
@@ -640,4 +644,24 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+void close_owned_file (tid_t tid)
+{
+	struct list_elem *e;
+	struct list_elem *next;
+	struct file_descriptor *fd_struct;
+	e = list_begin (&open_file_list);
+	while (e != list_tail (&open_file_list))
+	{
+		next = list_next (e);
+		fd_struct = list_entry (e, struct file_descriptor, file_elem);
+		if (fd_struct->file_owner == tid)
+		{
+			list_remove (e);
+			file_close (fd_struct->file);
+			free (fd_struct);
+		}
+		e = next;
+	}
 }
