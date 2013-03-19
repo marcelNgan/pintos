@@ -41,11 +41,16 @@ pagedir_destroy (uint32_t *pd)
         uint32_t *pte;
         
         for (pte = pt; pte < pt + PGSIZE / sizeof *pte; pte++)
-          if (*pte & PTE_P) 
-            free_vm_frame (pte_get_page (*pte));
-        free_vm_frame (pt);
+        {
+          //free the vm frame 
+          if (*pte & PTE_P)
+            free_vm_frame(pte_get_page (*pte));
+            
+        //free all the vm pages!!!!!
+        free_vm_frame(pt);
+        }
       }
-  free_vm_frame (pd);
+  free_vm_frame(pd);
 }
 
 /* Returns the address of the page table entry for virtual

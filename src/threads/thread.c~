@@ -827,9 +827,6 @@ init_thread (struct thread *t, const char *name, int priority)
   lock_init(&t->child_lock);
   cond_init(&t->child_cond);
   list_init(&t->children);
-
-  //initialise the mapid to 0
-  t->mapid_alloc = 0;
 #endif
 
 
