@@ -133,6 +133,9 @@ struct thread
     //hash table of all the files for this user process.
     struct hash mapped_files;
     
+    //supplementary hash table
+    struct hash spt;
+    
 #endif
 
     /* Owned by thread.c. */

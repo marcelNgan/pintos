@@ -118,7 +118,7 @@ static struct frame *get_frame (void *frame)
     vm_frame = NULL;
       
   }
-  lock_release(frame_lock);
+  lock_release(&frame_lock);
   
   return vm_frame;
 }

@@ -20,7 +20,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "vm/frame.h"
-
+#include "vm/page.h"
 
 
 static thread_func start_process NO_RETURN;
@@ -82,6 +82,10 @@ start_process (void *file_name_)
   int load_success;
   struct thread *cur;
   struct thread *parent;
+  
+  
+  //initialise the supplementary table
+  hash_init(&cur->spt, supple_hash_ptable, supple_less, NULL);
    
  /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -209,6 +213,10 @@ process_exit (void)
   if (cur->file != NULL)
     file_allow_write(cur->file);
   close_owned_file(cur->tid);
+  
+  //free supplementary page table
+  free_supple_table (&cur->spt);
+  
   parent = get_thread(cur->pid);
   if (parent != NULL)
     {
@@ -319,7 +327,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
   bool success = false;
   int i;
 
-  printf("\n\nFILENAME --> %s \n\n\n",file_name);
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
@@ -402,7 +409,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
-              if (!load_segment (file, file_page, (void *) mem_page,
+              if (!lazy_loading (file, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable))
                 goto done;
             }
@@ -530,6 +537,39 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
+    }
+  return true;
+}
+
+/*
+    loading the segments lazily
+*/
+static bool lazy_loading (struct file *file, off_t ofs, uint8_t *upage,
+                     uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
+{
+  ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
+  ASSERT (pg_ofs (upage) == 0);
+  ASSERT (ofs % PGSIZE == 0);
+  int i, j;
+  file_seek (file, ofs);
+  size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+  size_t page_zero_bytes = PGSIZE - page_read_bytes;
+  for (i = read_bytes, j = zero_bytes; i > 0 || j > 0;
+                                        i-=page_read_bytes, j-=page_zero_bytes) 
+    {
+      /* Calculate how to fill this page.
+         We will read PAGE_READ_BYTES bytes from FILE
+         and zero the final PAGE_ZERO_BYTES bytes. */
+      page_read_bytes = i < PGSIZE ? i : PGSIZE;
+      page_zero_bytes = PGSIZE - page_read_bytes;
+      if(!insert_file(file, ofs, upage, page_read_bytes, 
+                                        page_zero_bytes, writable))
+        return false;
+        
+        
+      upage+=PGSIZE;
+      ofs += page_read_bytes;      
+      
     }
   return true;
 }
