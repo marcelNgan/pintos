@@ -11,6 +11,7 @@
 #include "threads/malloc.h"
 #include "filesys/file.h"
 #include "devices/input.h"
+#include "vm/page.h"
 
 static void syscall_handler (struct intr_frame *);
 
@@ -28,6 +29,9 @@ static int write (int, const void *, unsigned);
 static void seek (int, unsigned);
 static unsigned tell (int);
 static void close (int);
+static bool is_valid_vaddr(const void * pointer);
+
+static uint32_t *esp;
 
 void
 syscall_init (void) 
@@ -46,6 +50,7 @@ syscall_handler (struct intr_frame *f)
   if (!is_valid_pointer (esp) || !is_valid_pointer (esp + 1) ||
                  !is_valid_pointer (esp + 2) || !is_valid_pointer (esp + 3))
   {
+  printf("\n\n\nhere>????\n\n");
     exit (-1);
   }
   else
@@ -132,11 +137,12 @@ exit (int status)
 }
 
 static pid_t exec (const char *cmd_line)
-{
+{    
   tid_t tid;
   struct thread *cur;
   if (!is_valid_pointer(cmd_line))
   {
+
     exit(-1);
   }
   cur = thread_current();
@@ -222,14 +228,47 @@ static int filesize (int fd)
 
 static int read (int fd, void *buffer, unsigned size)
 {
+  printf("\n\n\n\nhi jose\n\n\n\n");
   struct file_descriptor *struct_fd;
   int status = 0; 
-
-  if (!is_valid_pointer(buffer) || !is_valid_pointer(buffer + size - 1))
-    exit (-1);
-
-  lock_acquire (&fileLock); 
+  struct thread *t = thread_current();
   
+  unsigned size_of_buffer = size;
+  void * buffer_ptr = buffer;
+
+  while(buffer_ptr != NULL)
+  {
+    if(is_valid_vaddr(buffer_ptr))
+      exit(-1);
+    if(pagedir_get_page(t->pagedir, buffer_ptr)==NULL)
+    {
+      struct supple_page_table_entry *entry;
+      entry = find_supple_entry(&t->spt, pg_round_down(buffer_ptr));
+      if(entry != NULL && !entry->is_loaded)
+        load_data(entry);
+      else if (entry == NULL && buffer_ptr >= (esp-32))
+        increase_stack (buffer_ptr);
+      else 
+        exit(-1);
+   
+    }
+   
+    if(size_of_buffer ==0)
+    {
+      buffer_ptr = NULL;
+    }
+    else if (PGSIZE <= size_of_buffer)
+    {
+      size_of_buffer -= PGSIZE;
+      buffer_ptr += PGSIZE;
+    }
+    else
+    {
+      size_of_buffer =0;
+      buffer_ptr = buffer +size -1;
+    }
+  }
+  lock_acquire(&fileLock);
   if (fd == STDOUT_FILENO)
     {
       lock_release (&fileLock);
@@ -337,6 +376,11 @@ bool is_valid_pointer(const void *pointer)
     return true;
   else
     return false;
+}
+static bool is_valid_vaddr(const void * pointer)
+{
+  return pointer !=NULL && is_user_vaddr(pointer);
+
 }
 
 int fd_allocation()

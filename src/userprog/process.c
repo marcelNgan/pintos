@@ -68,6 +68,7 @@ process_execute (const char *file_name)
       list_push_back(&cur->children, &child->elem_child);
     }
   }
+  
   return tid;
 }
 
@@ -553,7 +554,7 @@ static bool lazy_loading (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
   int i, j;
-  file_seek (file, ofs);
+  //file_seek (file, ofs);
   size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
   size_t page_zero_bytes = PGSIZE - page_read_bytes;
   for (i = read_bytes, j = zero_bytes; i > 0 || j > 0;
