@@ -158,7 +158,7 @@ page_fault (struct intr_frame *f)
   user = (f->error_code & PF_U) != 0;
 
   /* if the page fault it caused by a write violation, exit the process*/
-  if (!is_valid_pointer(fault_addr))
+  if (!not_present|| fault_addr == NULL|| !is_user_vaddr(fault_addr))
     exit (-1);
   
   entry = find_supple_entry(&t->spt, pg_round_down(fault_addr));
