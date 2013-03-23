@@ -8,4 +8,7 @@ int process_wait (tid_t);
 void process_exit (void);
 void process_activate (void);
 
+mapid_t add_mmf (void *, struct file*, int32_t);
+void remove_mmfs(mapid_t);
+
 #endif /* userprog/process.h */

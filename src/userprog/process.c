@@ -23,6 +23,19 @@
 #include "vm/page.h"
 
 
+struct mmf
+{
+  struct hash_elem elem;
+  struct file *file;
+  void* addr;
+  unsigned pg_num;
+  
+  //id for the mmf
+  mapid_t mapid;
+}; 
+
+
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 void close_owned_file (tid_t tid);
@@ -31,6 +44,15 @@ void close_owned_file (tid_t tid);
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
+
+//memory mapping hash functions and freeing functions
+unsigned mmf_hash (const struct hash_elem *, void *);
+bool mmf_less (const struct hash_elem *, const struct hash_elem *, void *);
+void free_mmfs (struct hash *);
+static void free_mmfs_entry (struct hash_elem *, void *);
+static void mmfs_free_entry (struct mmf* );
+static mapid_t mapid_allocation (void);   
+
 tid_t
 process_execute (const char *file_name) 
 {
@@ -38,6 +60,7 @@ process_execute (const char *file_name)
   tid_t tid;
   struct child *child;
   struct thread *cur;
+
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
@@ -81,12 +104,15 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
   int load_success;
-  struct thread *cur;
+  struct thread *cur = thread_current();
   struct thread *parent;
   
   
   //initialise the supplementary table
   hash_init(&cur->spt, supple_hash_ptable, supple_less, NULL);
+  
+  //initialise the supplementary table
+  hash_init(&cur->mmfs, mmf_hash, mmf_less, NULL);
    
  /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -101,7 +127,6 @@ start_process (void *file_name_)
   else
     load_success = 1;
 
-  cur = thread_current();
   parent = get_thread(cur->pid);
   if (parent != NULL)
   {
@@ -183,6 +208,9 @@ process_exit (void)
   struct thread *parent;
   struct list_elem *e;
   struct list_elem *temp;
+  
+  
+  free_mmfs(&cur->mmfs);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -314,7 +342,8 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
 static bool lazy_loading (struct file *file, off_t ofs, uint8_t *upage,
-                     uint32_t read_bytes, uint32_t zero_bytes, bool writable);
+                          uint32_t read_bytes, uint32_t zero_bytes, 
+                          bool writable);
 
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
@@ -343,6 +372,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     {
       /*printf ("load: %s: open failed\n", file_name);*/
       printf ("load: %s: open failed\n", t->name);
+      file_close(file);
       goto done; 
     }
   t->file = file;
@@ -390,7 +420,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
         case PT_SHLIB:
           goto done;
         case PT_LOAD:
-          if (validate_segment (&phdr, file)) 
+          {
+		  bool validation = validate_segment (&phdr, file);
+          if (validation) 
             {
               bool writable = (phdr.p_flags & PF_W) != 0;
               uint32_t file_page = phdr.p_offset & ~PGMASK;
@@ -398,20 +430,20 @@ load (const char *file_name, void (**eip) (void), void **esp)
               uint32_t page_offset = phdr.p_vaddr & PGMASK;
               uint32_t read_bytes, zero_bytes;
               if (phdr.p_filesz > 0)
-                {
-                  /* Normal segment.
-                     Read initial part from disk and zero the rest. */
-                  read_bytes = page_offset + phdr.p_filesz;
-                  zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
-                                - read_bytes);
-                }
+              {
+                /* Normal segment.
+                   Read initial part from disk and zero the rest. */
+                read_bytes = page_offset + phdr.p_filesz;
+                zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
+                              - read_bytes);
+              }
               else 
-                {
-                  /* Entirely zero.
-                     Don't read anything from disk. */
-                  read_bytes = 0;
-                  zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
-                }
+              {
+                /* Entirely zero.
+                   Don't read anything from disk. */
+                read_bytes = 0;
+                zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
+              }
               if (!lazy_loading (file, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable))
                 goto done;
@@ -419,6 +451,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
           else
             goto done;
           break;
+          }
         }
     }
 
@@ -553,27 +586,25 @@ static bool lazy_loading (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
-  int i, j;
   //file_seek (file, ofs);
   size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
   size_t page_zero_bytes = PGSIZE - page_read_bytes;
-  for (i = read_bytes, j = zero_bytes; i > 0 || j > 0;
-                                        i-=page_read_bytes, j-=page_zero_bytes) 
-    {
-      /* Calculate how to fill this page.
-         We will read PAGE_READ_BYTES bytes from FILE
-         and zero the final PAGE_ZERO_BYTES bytes. */
-      page_read_bytes = i < PGSIZE ? i : PGSIZE;
-      page_zero_bytes = PGSIZE - page_read_bytes;
-      if(!insert_file(file, ofs, upage, page_read_bytes, 
-                                        page_zero_bytes, writable))
-        return false;
+  for (; read_bytes > 0 || zero_bytes > 0; 
+       read_bytes-=page_read_bytes, zero_bytes-=page_zero_bytes) 
+  {
+    /* Calculate how to fill this page.
+       We will read PAGE_READ_BYTES bytes from FILE
+       and zero the final PAGE_ZERO_BYTES bytes. */
+    page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+    page_zero_bytes = PGSIZE - page_read_bytes;
+    if(!insert_file(file, ofs, upage, page_read_bytes, page_zero_bytes, 
+        writable))
+      return false; 
         
-        
-      upage+=PGSIZE;
-      ofs += page_read_bytes;      
+    upage += PGSIZE;
+    ofs += page_read_bytes;      
       
-    }
+  }
   return true;
 }
 
@@ -710,6 +741,151 @@ void close_owned_file (tid_t tid)
 		}
 		e = next;
 	}
+}
+
+unsigned
+mmf_hash (const struct hash_elem *elem, void *aux UNUSED)
+{
+  const struct mmf *mmf = hash_entry (elem, struct mmf, elem);
+  return hash_bytes (&mmf->mapid, sizeof mmf->mapid);
+}
+
+//allocating the ids to the the mmfs
+static mapid_t mapid_allocation()
+{
+  struct thread *t = thread_current();
+  return t->mapid_alloc++;
+}
+
+
+//helper function for finding the value
+bool
+mmf_less(const struct hash_elem *a, const struct hash_elem *b,
+                   void *aux UNUSED) 
+{
+
+
+   const struct mmf *mmfA = hash_entry(a, struct mmf, elem);
+   const struct mmf *mmfB = hash_entry(b, struct mmf, elem);
+
+   return (mmfA->mapid < mmfB->mapid);
+}
+// used to free the hash table
+void 
+free_mmfs (struct hash *mmfs)
+{
+  hash_destroy (mmfs, free_mmfs_entry);
+}
+//used to free specific hash entries
+static void
+free_mmfs_entry (struct hash_elem *e, void *aux UNUSED)
+{
+  struct mmf *mmf;
+  mmf = hash_entry (e, struct mmf, elem);
+  mmfs_free_entry (mmf);
+}
+// used to iteratively free the mmf entries
+static void
+mmfs_free_entry (struct mmf* mmf_ptr)
+{
+  struct thread *t = thread_current ();
+  struct hash_elem *e;
+  int pg_num;
+  struct supple_page_table_entry entry;
+  struct supple_page_table_entry *entry_ptr;
+  int ofs;
+
+  pg_num = mmf_ptr->pg_num;
+  ofs = 0;
+  while (pg_num-- > 0)
+    {
+      entry.uvpaddr = mmf_ptr->addr + ofs;
+      e = hash_delete (&t->spt, &entry.elem);
+      if (e != NULL)
+	    {
+	      entry_ptr = hash_entry (e, struct supple_page_table_entry, elem);
+	      if (entry_ptr->is_loaded
+	                        && pagedir_is_dirty (t->pagedir, entry_ptr->uvpaddr))
+	      {
+	        lock_acquire (&fileLock);
+	        file_seek (entry_ptr->mmf_page.file, entry_ptr->mmf_page.ofset);
+	        file_write (entry_ptr->mmf_page.file, 
+			    entry_ptr->uvpaddr,
+			    entry_ptr->mmf_page.reads);
+	        lock_release (&fileLock);
+	      }
+	      free (entry_ptr);
+	    }
+      ofs += PGSIZE;
+    }
+
+  lock_acquire (&fileLock);
+  file_close (mmf_ptr->file);
+  lock_release (&fileLock);
+
+  free (mmf_ptr);
+}
+
+
+
+// inserting the mmf file into the hash table of the mmf files
+mapid_t add_mmf (void *addr, struct file* file, int32_t length)
+{
+  struct thread *t = thread_current ();
+  struct mmf *mmf;
+  struct hash_elem *elem;
+  int ofs;
+  int pg_num;
+
+  mmf = calloc (1, sizeof *mmf);
+  if (mmf == NULL)
+    return -1;
+
+  mmf->mapid = mapid_allocation ();
+  mmf->file = file;
+  mmf->addr = addr;
+
+  ofs = 0;
+  pg_num = 0;
+  while (length > 0)
+  {
+    size_t read_bytes = PGSIZE;
+    if(length<PGSIZE)
+      read_bytes = length;
+    if (!insert_mmf (file, ofs, addr, read_bytes))
+	    return -1;
+
+    ofs += PGSIZE;
+    length -= PGSIZE;
+    addr += PGSIZE;
+    pg_num++;
+  }
+
+  mmf->pg_num = pg_num;  
+
+  elem = hash_insert (&t->mmfs, &mmf->elem);
+  if (elem != NULL)
+    return -1;
+
+  return mmf->mapid;
+}
+
+//deleting the element and freeing it from the hash table
+void
+remove_mmfs (mapid_t mapid)
+{
+  struct thread *cur = thread_current ();
+  struct mmf mmf;
+  struct mmf *mmf_ptr;
+  struct hash_elem *elem;
+
+  mmf.mapid = mapid;
+  elem = hash_delete (&cur->mmfs, &mmf.elem);
+  if (elem != NULL)
+    {
+      mmf_ptr = hash_entry (elem, struct mmf, elem);
+      mmfs_free_entry (mmf_ptr);
+    }
 }
 
 

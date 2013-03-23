@@ -11,6 +11,7 @@
 
 enum supple_type
 {
+  SWAP = 001,
   FILE = 002,
   MMF  = 004
 };
@@ -39,6 +40,9 @@ struct supple_page_table_entry
   struct file_page file_page;
   struct mmf_page mmf_page;
   bool is_loaded;
+
+  size_t swap_slot;
+  bool is_writable;
 
 };
 

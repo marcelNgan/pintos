@@ -7,6 +7,7 @@
 #include "threads/synch.h"
 #include "filesys/file.h"
 #include "lib/kernel/hash.h"
+#include "vm/page.h"
 
 
 
@@ -130,11 +131,12 @@ struct thread
     
     //this indicated the next mapid allocator
     mapid_t mapid_alloc;
-    //hash table of all the files for this user process.
-    struct hash mapped_files;
     
     //supplementary hash table
     struct hash spt;
+    
+    //the hash table for memory mapped files
+    struct hash mmfs;
     
 #endif
 

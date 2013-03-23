@@ -7,10 +7,12 @@
 #include "filesys/file.h"
 #include "string.h"
 #include "userprog/syscall.h"
+#include "vm/swap.h"
 
 
 static bool load_file(struct supple_page_table_entry *);
 static bool load_mmf(struct supple_page_table_entry *);
+static bool load_swap (struct supple_page_table_entry *);
 static void free_entries (struct hash_elem *, void * UNUSED);
 
 void init_page (void){
@@ -84,12 +86,9 @@ bool insert_file (struct file *f, off_t ofset, uint8_t * userp,
     if (elem == NULL)
       return true;
     
-    return false;
-
-  
-  
-                                            
-}                                                   
+    return false;                                        
+}                 
+                                  
 bool insert_mmf (struct file *f, off_t ofset, uint8_t * userp, 
                                                       uint32_t reads)
 {
@@ -100,8 +99,7 @@ bool insert_mmf (struct file *f, off_t ofset, uint8_t * userp,
   entry = calloc (1, sizeof *entry);
   if(entry == NULL)
     return false;
-  else
-  {
+ 
     entry->uvpaddr = userp;
     entry->type = MMF;
     entry->mmf_page.ofset = ofset;
@@ -118,7 +116,7 @@ bool insert_mmf (struct file *f, off_t ofset, uint8_t * userp,
     
     return false;
 
-  }
+  
                                             
 } 
 struct supple_page_table_entry *find_supple_entry (struct hash * table, 
@@ -139,36 +137,46 @@ void write_unlocked_file (struct supple_page_table_entry *entry)
 {
   if(entry->type == MMF)
     {
-    file_seek(entry->mmf_page.file, entry->mmf_page.ofset);
-    file_write(entry->mmf_page.file,entry->uvpaddr, entry->mmf_page.reads);
+      file_seek(entry->mmf_page.file, entry->mmf_page.ofset);
+      file_write(entry->mmf_page.file,entry->uvpaddr, entry->mmf_page.reads);
     }
                                             
 } 
+
+
 void free_supple_table (struct hash * table)
 {
   hash_destroy (table, free_entries);                                            
 } 
 
-static void free_entries(struct hash_elem *e, void *aux UNUSED)
-{
-  struct supple_page_table_entry *entry = hash_entry (e, 
-                                        struct supple_page_table_entry, elem);
-  
-  
-  free(entry);
 
+
+static void free_entries(struct hash_elem *elem, void *aux UNUSED)
+{
+  struct supple_page_table_entry *entry = hash_entry (elem, 
+                                        struct supple_page_table_entry, elem);
+  if (entry->type & SWAP)
+    clear_slot (entry->swap_slot);
+  free(entry);
 }
+
+
 bool load_data (struct supple_page_table_entry *entry)
 {
   bool result = false;
   switch (entry-> type)
   {
-    case MMF:
-      result = load_mmf(entry);
-      break;
     case FILE:
-      result = load_file(entry);
-      break;    
+      result = load_file (entry);
+      break;
+    case MMF:
+    case MMF | SWAP:
+      result = load_mmf (entry);
+      break;
+    case FILE | SWAP:
+    case SWAP:
+      result = load_swap (entry);
+      break;
     default:
       break;
   }
@@ -206,7 +214,8 @@ static bool load_file(struct supple_page_table_entry *entry)
   return result;
 }
 
-static bool load_mmf (struct supple_page_table_entry *entry)
+static bool 
+load_mmf (struct supple_page_table_entry *entry)
 {
   bool result;
 
@@ -225,33 +234,75 @@ static bool load_mmf (struct supple_page_table_entry *entry)
     free_vm_frame (page);
     return false;
   }
-  memset (page + entry->mmf_page.reads,0,PGSIZE - entry->mmf_page.reads);
+  memset (page + entry->mmf_page.reads, 0, PGSIZE - entry->mmf_page.reads);
   result = pagedir_set_page (t->pagedir, entry->uvpaddr, page, true);
   if(!result)
   {
     free_vm_frame (page);
     return false;
   }
-  entry->is_loaded = result;
-  return result;
+
+  entry->is_loaded = true;
+  if (entry->type & SWAP)
+    entry->type = MMF;
+
+  return true;
 }
-void increase_stack (void *address)
+
+/* load a blank page as defined by the supplemental data for this page */
+static bool
+load_swap (struct supple_page_table_entry *entry)
+{
+  uint8_t *page = allocate_frame (PAL_USER);
+  if (page == NULL)
+    return false;
+
+  if (!pagedir_set_page (thread_current()->pagedir, entry->uvpaddr, page, 
+			 entry->is_writable))
+  {
+    free_vm_frame (page);
+    return false;
+  }
+
+  swap_page_out (entry->swap_slot, entry->uvpaddr);
+
+  if (entry->type == SWAP)
+  {
+    hash_delete (&thread_current ()->spt, &entry->elem);
+  }
+
+  if (entry->type == (FILE | SWAP))
+  {
+      entry->is_loaded = true;
+      entry->type = FILE;
+  }
+
+  return true;
+}
+
+
+void 
+increase_stack (void *address)
 {
   void *page; 
   page = allocate_frame(PAL_USER | PAL_ZERO);
   if(page==NULL)
     return;
-
   else
   {
     struct thread *t = thread_current();
-    bool success = pagedir_set_page(t->pagedir, pg_round_down (address), page, true);
+    bool success = pagedir_set_page(t->pagedir, pg_round_down (address), 
+                                                                    page, true);
     if(!success)
     {
-
       free_vm_frame(page);
     }
-
-  }
-                                            
+  }                                   
 } 
+
+
+
+
+
+
+

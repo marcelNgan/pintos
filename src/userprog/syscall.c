@@ -29,8 +29,10 @@ static int write (int, const void *, unsigned);
 static void seek (int, unsigned);
 static unsigned tell (int);
 static void close (int);
-static bool is_valid_vaddr(const void * pointer);
+static mapid_t mmap (int, void *);
+static void munmap (mapid_t);
 
+static bool is_valid_vaddr(const void *);
 static uint32_t *esp;
 
 void
@@ -44,13 +46,11 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f) 
 {
-  uint32_t *esp;
   esp = f->esp;
 
   if (!is_valid_pointer (esp) || !is_valid_pointer (esp + 1) ||
                  !is_valid_pointer (esp + 2) || !is_valid_pointer (esp + 3))
   {
-  printf("\n\n\nhere>????\n\n");
     exit (-1);
   }
   else
@@ -96,6 +96,12 @@ syscall_handler (struct intr_frame *f)
         break;
       case SYS_CLOSE:
         close (*(esp + 1));
+        break;
+      case SYS_MMAP:
+        f->eax = mmap (*(esp + 1), (void *) *(esp + 2));
+        break;
+      case SYS_MUNMAP:
+        munmap (*(esp + 1));
         break;
       default:
         break;
@@ -195,7 +201,6 @@ static int open (const char *file)
 
   if (!is_valid_pointer(file))
     exit(-1);
-  
   lock_acquire(&fileLock);
   f = filesys_open(file);
   if (f != NULL)
@@ -228,7 +233,6 @@ static int filesize (int fd)
 
 static int read (int fd, void *buffer, unsigned size)
 {
-  printf("\n\n\n\nhi jose\n\n\n\n");
   struct file_descriptor *struct_fd;
   int status = 0; 
   struct thread *t = thread_current();
@@ -238,7 +242,7 @@ static int read (int fd, void *buffer, unsigned size)
 
   while(buffer_ptr != NULL)
   {
-    if(is_valid_vaddr(buffer_ptr))
+    if(!is_valid_vaddr(buffer_ptr))
       exit(-1);
     if(pagedir_get_page(t->pagedir, buffer_ptr)==NULL)
     {
@@ -265,18 +269,16 @@ static int read (int fd, void *buffer, unsigned size)
     else
     {
       size_of_buffer =0;
-      buffer_ptr = buffer +size -1;
+      buffer_ptr = buffer + size -1;
     }
   }
   lock_acquire(&fileLock);
   if (fd == STDOUT_FILENO)
-    {
-      lock_release (&fileLock);
-      return -1;
-	}
-
-  if (fd == STDIN_FILENO)
-    {
+  {
+      status =  -1;
+  }
+  else if (fd == STDIN_FILENO)
+  {
       uint8_t c;
       unsigned counter = size;
       uint8_t *buf = buffer;
@@ -287,13 +289,14 @@ static int read (int fd, void *buffer, unsigned size)
           counter--; 
         }
       *buf = 0;
-      lock_release (&fileLock);
-      return (size - counter);
-    } 
-  
-  struct_fd = get_current_file (fd);
-  if (struct_fd != NULL)
-    status = file_read (struct_fd->file, buffer, size);
+      status = size - counter;
+  }
+  else
+  {
+      struct_fd = get_current_file(fd);
+      if (struct_fd != NULL)
+        status = file_read(struct_fd->file, buffer, size);
+  }
 
   lock_release (&fileLock);
   return status;
@@ -304,30 +307,47 @@ static int write (int fd, const void *buffer, unsigned size)
 {
   struct file_descriptor *struct_fd;  
   int status = 0;
-
-  if (!is_valid_pointer(buffer) || !is_valid_pointer(buffer + size - 1))
-    exit (-1);
-
+  unsigned size_of_buffer = size;
+  void * buffer_ptr = buffer;
+  while (buffer_ptr != NULL)
+  {
+    if (!is_valid_pointer(buffer_ptr))
+      exit(-1);
+    if (size_of_buffer >PGSIZE)
+    {
+      size_of_buffer -= PGSIZE;
+      buffer_ptr += PGSIZE;
+    }
+    else if (size_of_buffer == 0)
+    {
+      buffer_ptr = NULL;
+    }
+    else 
+    {
+      size_of_buffer = 0;
+      buffer_ptr = buffer + size - 1;
+    }
+ 
+  }
   lock_acquire (&fileLock); 
 
   if (fd == STDIN_FILENO)
-    {
-      lock_release(&fileLock);
-      return -1;
-    }
+  {
+      status = -1;
+  }
 
-  if (fd == STDOUT_FILENO)
-    {
+  else if (fd == STDOUT_FILENO)
+  {
       putbuf (buffer, size);
-      lock_release(&fileLock);
-      return size;
-    }
- 
-  struct_fd = get_current_file (fd);
-  if (struct_fd != NULL)
-    status = file_write (struct_fd->file, buffer, size);
+      status = size;
+  } 
+  else
+  {
+    struct_fd = get_current_file (fd);
+    if (struct_fd != NULL)
+      status = file_write (struct_fd->file, buffer, size);
+  }
   lock_release (&fileLock);
-  
   return status;
 }
 
@@ -414,14 +434,58 @@ void close_current_file (int fd)
       prev = list_prev (e);
       fd_struct = list_entry (e, struct file_descriptor, file_elem);
       if (fd_struct->fd_num == fd)
-	{
-	  list_remove (e);
-    file_close (fd_struct->file);
-	  free (fd_struct);
-	  return ;
-	}
+	    {
+	      list_remove (e);
+        file_close (fd_struct->file);
+	      free (fd_struct);
+	      return ;
+     	}
       e = prev;
     }
   return ;
+}
+
+mapid_t mmap (int file_desc, void *address)
+{
+  struct thread *cur = thread_current();
+  int fail = -1;
+  
+  if(address == NULL || (pg_ofs(address)!=0 )|| address == 0x0)
+    return fail;
+  if(file_desc==0 ||file_desc==1)
+    return fail;
+    
+  struct file_descriptor *fd = get_current_file(file_desc);
+  
+  if(fd==NULL)
+    return fail;
+  
+  int32_t length;
+  length = file_length(fd->file);
+  if(length <=0)
+    return fail;
+    
+  int ofs = 0;
+  while (ofs<length)
+  {
+    if(find_supple_entry(&cur->spt, address +ofs))
+      return fail;
+    if (pagedir_get_page(cur->pagedir,address +ofs))
+      return fail;
+      
+      ofs += PGSIZE;
+  }
+  
+  lock_acquire (&fileLock);
+  struct file *f = file_reopen(fd->file);
+  lock_release(&fileLock);
+  if(f== NULL)
+    return fail;
+  else
+    return add_mmf(address, f, length);
+}
+void munmap (mapid_t map)
+{
+  remove_mmfs(map);
 }
 
