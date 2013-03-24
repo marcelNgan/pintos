@@ -4,7 +4,7 @@
 #include "threads/thread.h"
 
 struct frame {
-  tid_t thread;   // which thread it is in
+  tid_t tid;   // which thread it is in
   void *uvpaddr;  //user virtual page address
   struct list_elem frame_elem;  // adding and finding the frame in the list.
   uint32_t *page_table_entry;  //where it is in page table

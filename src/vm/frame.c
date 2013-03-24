@@ -85,13 +85,12 @@ void set_frame_usr (void* frame, uint32_t *page_table_entry, void *paddr)
 static bool insert_frame (void *frame)
 {
   struct frame* vm_frame;
-  struct thread *t = thread_current();
   vm_frame = calloc(1, sizeof *vm_frame);
   
   if(vm_frame ==NULL)
     return false;
     
-  vm_frame->thread = t->tid;
+  vm_frame->tid = thread_current()->tid;
   vm_frame->frame = frame;
   
   lock_acquire(&frame_lock);
@@ -103,15 +102,16 @@ static bool insert_frame (void *frame)
 static void delete_frame (void *frame)
 {
   struct frame* vm_frame;
-  struct list_elem *frame_elem =list_head (&frames) ;
+  struct list_elem *elem ;
   
   lock_acquire(&frame_lock);
-  while ((frame_elem = list_next(frame_elem)) != list_tail(&frames))
+  elem = list_head (&frames);
+  while ((elem = list_next(elem)) != list_tail(&frames))
   {
-    vm_frame = list_entry(frame_elem, struct frame, frame_elem);
+    vm_frame = list_entry(elem, struct frame, frame_elem);
     if(vm_frame->frame == frame)
     {
-      list_remove (frame_elem);
+      list_remove (elem);
       free(vm_frame);
       break;
     }  
@@ -122,12 +122,13 @@ static void delete_frame (void *frame)
 static struct frame *get_frame (void *frame)
 {  
   struct frame* vm_frame;
-  struct list_elem *frame_elem =list_head (&frames) ;
+  struct list_elem *elem;
   
   lock_acquire(&frame_lock);
-  while ((frame_elem = list_next(frame_elem)) != list_tail(&frames))
+  elem =list_head (&frames);
+  while ((elem = list_next(elem)) != list_tail(&frames))
   {
-    vm_frame = list_entry(frame_elem, struct frame, frame_elem);
+    vm_frame = list_entry(elem, struct frame, frame_elem);
     if(vm_frame->frame == frame)
       break;
     vm_frame = NULL;
@@ -142,43 +143,43 @@ void *
 evict()
 {
   bool result;
-  struct frame *frame;
-  struct thread *thread = thread_current ();
+  struct frame *vm_frame;
+  struct thread *cur = thread_current ();
 
   lock_acquire (&evict_lock);
 
-  frame = choose_eviction();
-  if (frame == NULL)
+  vm_frame = choose_eviction();
+  if (vm_frame == NULL)
     PANIC ("Could not find a frame to evict!");
 
-  result = store_eviction(frame);
+  result = store_eviction(vm_frame);
   if (!result)
     PANIC ("Evicted frame was not saved!");
   
-  frame->thread = thread->tid;
-  frame->page_table_entry = NULL;
-  frame->uvpaddr = NULL;
+  vm_frame->tid = cur->tid;
+  vm_frame->page_table_entry = NULL;
+  vm_frame->uvpaddr = NULL;
 
   lock_release (&evict_lock);
 
-  return frame->frame;
+  return vm_frame->frame;
 }
 
 
 static bool
-store_eviction (struct frame *frame)
+store_eviction (struct frame *vm_frame)
 {
   struct thread *thread;
   struct supple_page_table_entry *entry;
 
-  thread = get_thread (frame->thread);
+  thread = get_thread (vm_frame->tid);
 
-  entry = find_supple_entry (&thread->spt, frame->uvpaddr);
+  entry = find_supple_entry (&thread->spt, vm_frame->uvpaddr);
    
   if (entry == NULL)
   {
     entry = calloc(1, sizeof *entry);
-    entry->uvpaddr = frame->uvpaddr;
+    entry->uvpaddr = vm_frame->uvpaddr;
     entry->type = SWAP;
     if (!insert_supple_page_table_entry(&thread->spt, entry))
       return false;
@@ -201,9 +202,9 @@ store_eviction (struct frame *frame)
     entry->type = entry->type | SWAP;
   }
 
-  memset (frame->frame, 0, PGSIZE);
+  memset (vm_frame->frame, 0, PGSIZE);
   entry->swap_slot = swap_slot;
-  entry->is_writable = *(frame->page_table_entry) & PTE_W;
+  entry->is_writable = *(vm_frame->page_table_entry) & PTE_W;
   
   entry->is_loaded = false;
   
@@ -213,7 +214,37 @@ store_eviction (struct frame *frame)
 
 static struct frame*
 choose_eviction () {
-  struct list_elem *e = list_head (&frames);
-  struct frame *frame = list_entry (e, struct frame, frame_elem);
-  return frame;
+  sruct frame *vm_frame;
+  struct thread *thread;
+  struct list_elem *elem;
+  struct frame *temp_frame = NULL;
+  int count = 1;
+  bool done = false;
+
+  while (!found)
+  {
+	elem = list_head (&frames);
+	while (elem = list_next(elem)) != list_tail(&frames))
+	{
+	  vm_frame = list_entry (elem, struct frame, frame_elem);
+	  thread = get_thread(vm_frame->tid);
+	  bool is_accessed = pagedir_is_accessed (thread->pagedir, vm_frame->uvpaddr);
+	  if (!is_accessed)
+	  {
+	    temp_frame = vm_frame;
+		list_remove (elem);
+		list_push_back (frames,elem);
+		break;
+	  } else
+	  {
+	    pagedir_set_accessed (thread->pagedir, frame->uvpaddr, false);
+	  }
+	}
+	round_count++;
+	if (temp_frame != NULL)
+	  found = true;
+	else if (round_count == 2)
+	  found = true;
+  }
+  return temp_frame;
 }

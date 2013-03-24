@@ -32,9 +32,6 @@ unsigned supple_hash_ptable (const struct hash_elem * elem, void *aux UNUSED)
 bool supple_less(const struct hash_elem *a, const struct hash_elem *b,
                                             void *aux UNUSED)
 {
-   ASSERT(a!=NULL);
-   ASSERT(b!=NULL);
-
    const struct supple_page_table_entry *entryA = hash_entry(a, 
                                          struct supple_page_table_entry, elem);
    const struct supple_page_table_entry *entryB = hash_entry(b, 
@@ -44,8 +41,8 @@ bool supple_less(const struct hash_elem *a, const struct hash_elem *b,
 }
                                             
                                             
-bool insert_supple_page_table_entry (struct hash * table, 
-                                        struct supple_page_table_entry * entry)
+bool insert_supple_page_table_entry (struct hash *table, 
+                                        struct supple_page_table_entry *entry)
 {
   struct hash_elem *elem;
   if (entry ==NULL)
@@ -53,7 +50,6 @@ bool insert_supple_page_table_entry (struct hash * table,
   elem = hash_insert (table, &entry->elem);
   if(elem == NULL)
     return true;
-    
   else 
     return false;
                                             
@@ -77,7 +73,7 @@ bool insert_file (struct file *f, off_t ofset, uint8_t * userp,
     entry->file_page.reads = reads;
     entry->file_page.zeros = zeros;
     entry->file_page.is_writable = writable;
-//    entry->mmf_page = NULL;
+    entry->mmf_page = NULL;
     entry->is_loaded = false;
     
     
@@ -105,7 +101,7 @@ bool insert_mmf (struct file *f, off_t ofset, uint8_t * userp,
     entry->mmf_page.ofset = ofset;
     entry->mmf_page.file = f;
     entry->mmf_page.reads = reads;
- //   entry->file_page = NULL;
+    entry->file_page = NULL;
     entry->is_loaded = false;
     
     
@@ -119,18 +115,18 @@ bool insert_mmf (struct file *f, off_t ofset, uint8_t * userp,
   
                                             
 } 
-struct supple_page_table_entry *find_supple_entry (struct hash * table, 
+struct supple_page_table_entry *find_supple_entry (struct hash *table, 
                                                                 void *address)
 {
   struct supple_page_table_entry entry;
-  struct hash_elem *elem;
+  struct hash_elem *hash_elem;
   
   
   entry.uvpaddr = address;
-  elem = hash_find (table, &entry.elem);
+  hash_elem = hash_find (table, &entry.elem);
   if(elem==NULL)
     return NULL;
-  return hash_entry(elem, struct supple_page_table_entry, elem);
+  return hash_entry(hash_elem, struct supple_page_table_entry, elem);
                                             
 } 
 void write_unlocked_file (struct supple_page_table_entry *entry)
@@ -151,9 +147,9 @@ void free_supple_table (struct hash * table)
 
 
 
-static void free_entries(struct hash_elem *elem, void *aux UNUSED)
+static void free_entries(struct hash_elem *hash_elem, void *aux UNUSED)
 {
-  struct supple_page_table_entry *entry = hash_entry (elem, 
+  struct supple_page_table_entry *entry = hash_entry (hash_elem, 
                                         struct supple_page_table_entry, elem);
   if (entry->type & SWAP)
     clear_slot (entry->swap_slot);
@@ -186,38 +182,39 @@ bool load_data (struct supple_page_table_entry *entry)
 
 static bool load_file(struct supple_page_table_entry *entry)
 {
-  bool result;
+  bool result = false;
   struct thread *t = thread_current();
 
   file_seek (entry->file_page.file, entry->file_page.ofset);
   //get memory from the user pool
   uint8_t *page;
   page = allocate_frame(PAL_USER);
-  if(page == NULL) return false;
+  if(page == NULL) 
+    return result;
   
-  int fileRead = file_read(entry->file_page.file,page, entry->file_page.reads);
+  int fileRead = file_read(entry->file_page.file, page, entry->file_page.reads);
   int read = (int) entry ->file_page.reads;
   if(fileRead != read)
   {
     free_vm_frame (page);
-    return false;
+    return result;
   }
-  memset (page + entry->file_page.reads,0,entry->file_page.zeros);
+  memset (page + entry->file_page.reads, 0, entry->file_page.zeros);
   result = pagedir_set_page (t->pagedir, entry->uvpaddr, page,
                                               entry->file_page.is_writable);
   if(!result)
   {
     free_vm_frame (page);
-    return false;
+    return result;
   }
-  entry->is_loaded = result;
+  entry->is_loaded = true;
   return result;
 }
 
 static bool 
 load_mmf (struct supple_page_table_entry *entry)
 {
-  bool result;
+  bool result = false;
 
   struct thread *t = thread_current();
 
@@ -225,50 +222,53 @@ load_mmf (struct supple_page_table_entry *entry)
   //get memory from the user pool
   uint8_t *page;
   page =  allocate_frame(PAL_USER);
-  if(page == NULL) return false;
+  if(page == NULL) 
+	return result;
 
-  int fileRead = file_read(entry->mmf_page.file,page, entry->mmf_page.reads);
+  int fileRead = file_read(entry->mmf_page.file, page, entry->mmf_page.reads);
   int read = (int) entry ->mmf_page.reads;
   if(fileRead != read)
   {
     free_vm_frame (page);
-    return false;
+    return result;
   }
   memset (page + entry->mmf_page.reads, 0, PGSIZE - entry->mmf_page.reads);
   result = pagedir_set_page (t->pagedir, entry->uvpaddr, page, true);
   if(!result)
   {
     free_vm_frame (page);
-    return false;
+    return result;
   }
 
   entry->is_loaded = true;
   if (entry->type & SWAP)
     entry->type = MMF;
 
-  return true;
+  return result;
 }
 
 /* load a blank page as defined by the supplemental data for this page */
 static bool
 load_swap (struct supple_page_table_entry *entry)
 {
+  bool result = false;
+  struct thread *t = thread_current();
   uint8_t *page = allocate_frame (PAL_USER);
   if (page == NULL)
-    return false;
+    return result;
 
-  if (!pagedir_set_page (thread_current()->pagedir, entry->uvpaddr, page, 
+  if (!pagedir_set_page (t->pagedir, entry->uvpaddr, page, 
 			 entry->is_writable))
   {
     free_vm_frame (page);
-    return false;
+    return result;
   }
 
   swap_page_out (entry->swap_slot, entry->uvpaddr);
 
   if (entry->type == SWAP)
   {
-    hash_delete (&thread_current ()->spt, &entry->elem);
+    hash_delete (t->spt, &entry->elem);
   }
 
   if (entry->type == (FILE | SWAP))
@@ -285,14 +285,14 @@ void
 increase_stack (void *address)
 {
   void *page; 
+  struct thread *t = thread_current();
   page = allocate_frame(PAL_USER | PAL_ZERO);
   if(page==NULL)
     return;
   else
   {
-    struct thread *t = thread_current();
     bool success = pagedir_set_page(t->pagedir, pg_round_down (address), 
-                                                                    page, true);
+                                   page, true);
     if(!success)
     {
       free_vm_frame(page);
